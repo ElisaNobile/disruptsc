@@ -6,6 +6,7 @@ tmp/*
 research/*
 analysis/*
 dataprep/*
+notes/*
 
 # Exclude input folder - data is now in separate repository
 input/*
