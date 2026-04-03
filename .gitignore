@@ -3,10 +3,9 @@ output/*
 !output/.gitkeep
 tmp/*
 !tmp/.gitkeep
-research/dataprep/
+research/*
 analysis/*
-!analysis/process-results.ipynb
-simulation_outputs.err
+dataprep/*
 
 # Exclude input folder - data is now in separate repository
 input/*
