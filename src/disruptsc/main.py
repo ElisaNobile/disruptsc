@@ -126,7 +126,12 @@ def main():
         export_results(simulation, model, parameters)
         
         # Finish
-        logging.info(f"End of simulation, running time {time.time() - t0}")
+        simulation_duration = time.time() - t0
+        logging.info(f"End of simulation, running time {simulation_duration}")
+        print(f"\n{'='*60}")
+        print(f"SIMULATION COMPLETED")
+        print(f"Total simulation duration: {simulation_duration:.2f} seconds ({simulation_duration/60:.2f} minutes)")
+        print(f"{'='*60}\n")
         
     finally:
         # Clean up isolated cache if enabled
