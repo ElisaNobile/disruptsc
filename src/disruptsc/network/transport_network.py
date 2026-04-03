@@ -371,10 +371,12 @@ class TransportNetwork(nx.Graph):
                     # Use traditional binary penalty system
                     if edge.get('overused', False):
                         logging.warning(f"Edge {(u, v)} ({edge['type']}, {edge.get('name', '')}) is over capacity and got selected")
+                        # for cost_per_ton_with_capacity_label in cost_per_ton_with_capacity_labels:
+                        #     logging.warning(str(cost_per_ton_with_capacity_label) + ": " + str(edge[cost_per_ton_with_capacity_label]))
                     else:
                         if edge['current_load'] > edge['capacity']:
-                            logging.info(f"Edge {(u, v)} ({edge['type']}) has reached its capacity: "
-                                       f"{edge['current_load']:.0f} / {edge['capacity']:.0f}")
+                            logging.warning(f"Edge {(u, v)} ({edge['type']}) has reached its capacity: "
+                                            f"{edge['current_load']:.0f} / {edge['capacity']:.0f}")
                             edge['overused'] = True
                             capacity_burden = 1e10
                             for cost_per_ton_with_capacity_label in cost_per_ton_with_capacity_labels:
@@ -383,10 +385,10 @@ class TransportNetwork(nx.Graph):
     def reset_loads(self):
         """
         Reset current_load to 0 and restore base costs (removes capacity scaling).
-        
+
         This method is called at the end of each time step to:
         - Reset all edge loads to zero
-        - Reset overused flags to False  
+        - Reset overused flags to False
         - Restore cost_per_ton_with_capacity_* attributes to base costs (multiplier = 1.0)
         """
         cost_per_ton_labels = self._get_cost_per_ton_attributes(with_capacity=False)
@@ -396,7 +398,7 @@ class TransportNetwork(nx.Graph):
             edge['current_load'] = 0
             edge['overused'] = False
             for i in range(len(cost_per_ton_labels)):
-                edge[cost_per_ton_labels[i]] = edge[cost_per_ton_with_capacity_labels[i]]
+                edge[cost_per_ton_with_capacity_labels[i]] = edge[cost_per_ton_labels[i]]
 
     def remove_all_shipments(self):
         for u, v in self.edges:
@@ -518,26 +520,14 @@ class TransportNetwork(nx.Graph):
                 raise ValueError(f"There are uncollected shipments: {list(edge_data['shipments'].keys())}")
 
 def _get_speed(edge_attr: dict, speed_dict: dict) -> float:
-    # if edge_attr['type'] == "roads":
-    #     # if edge_attr['class'] == 'primary':
-    #     #     return speed_dict['roads']['primary']
-    #     # elif edge_attr['class'] == 'secondary':
-    #     #     return speed_dict['roads']['primary']
-    #     # elif edge_attr['class'] == 'tertiary':
-    #     #     return speed_dict['roads']['primary']
-    #     # else:
-    #     if isinstance(speed_dict['roads'], float) or isinstance(speed_dict['roads'], int):
-    #         return speed_dict['roads']
-    #     elif isinstance(speed_dict['roads'], dict):
-    #         if ("paved" in speed_dict['roads'].keys()) and ("unpaved" in speed_dict['roads'].keys()):
-    #             if edge_attr['surface'] == 'unpaved':
-    #                 return speed_dict['roads']['unpaved']
-    #             else:
-    #                 return speed_dict['roads']['paved']
-    if edge_attr['type'] in ['railways', 'waterways', 'maritime', 'airways', "pipelines", "roads"]:
+    if edge_attr['type'] in ["roads", "multimodal"]:
+        if isinstance(speed_dict["roads"], dict):
+            attribute = edge_attr[speed_dict["roads"]['attribute']]
+            return speed_dict["roads"].get(attribute, speed_dict["roads"]["default"])
+        else:
+            return speed_dict["roads"]
+    elif edge_attr['type'] in ['railways', 'waterways', 'maritime', 'airways', "pipelines"]:
         return speed_dict[edge_attr['type']]
-    elif edge_attr['type'] == "multimodal":
-        return speed_dict['roads']  # these are very small links, so we assume paved roads
 
 
 def _get_dwell_time_and_fee(edge_attr: dict, dwell_times: dict, loading_fees: dict) -> (float, float):
@@ -550,12 +540,37 @@ def _get_dwell_time_and_fee(edge_attr: dict, dwell_times: dict, loading_fees: di
 def _get_border_crossing_time_and_fee(edge_attr: dict, border_crossing_times: dict,
                                       border_crossing_fees: dict) -> (float, float):
     if isinstance(edge_attr['special'], str):
-        if "custom" in edge_attr['special']:
+        if "custom" in edge_attr['special'] or "border" in edge_attr['special']:
             return border_crossing_times[edge_attr['type']], border_crossing_fees[edge_attr['type']]
     return 0.0, 0.0
 
 
 def _calculate_cost_per_ton(edge_attr, logistic_parameters: dict, time_resolution: str):
+    # Validate edge attributes early
+    import numpy as np
+
+    edge_identifier = f"Edge {edge_attr.get('id', 'unknown')} ({edge_attr.get('type', 'unknown')})"
+    if 'name' in edge_attr and edge_attr['name']:
+        edge_identifier += f" - '{edge_attr['name']}'"
+
+    # Check for nan km
+    if 'km' not in edge_attr or (isinstance(edge_attr['km'], float) and np.isnan(edge_attr['km'])):
+        raise ValueError(f"{edge_identifier}: 'km' attribute is missing or nan. Cannot calculate transport costs.")
+
+    # Check for zero or invalid speed
+    speed = _get_speed(edge_attr, logistic_parameters['speeds'])
+    if speed == 0 or (isinstance(speed, float) and np.isnan(speed)):
+        raise ValueError(f"{edge_identifier}: Speed is zero or nan (speed={speed}). Cannot calculate transport time.")
+
+    # Check for nan basic cost
+    edge_type = edge_attr['type']
+    for i, basic_cost_random in logistic_parameters['basic_cost_profiles'].items():
+        if edge_type not in basic_cost_random:
+            raise ValueError(f"{edge_identifier}: Transport type '{edge_type}' not found in basic_cost_profiles[{i}].")
+        basic_cost_value = basic_cost_random[edge_type]
+        if isinstance(basic_cost_value, float) and np.isnan(basic_cost_value):
+            raise ValueError(f"{edge_identifier}: basic_cost_profiles[{i}]['{edge_type}'] is nan. Cannot calculate transport costs.")
+
     # adjust cost of time: we suppose that there is one shipment per week
     # so if the model has a daily time steps, it is as if a shipment is "chuncked" in 7 small pieces
     # so what is "paid" in terms of time should be divided by 7
@@ -565,7 +580,7 @@ def _calculate_cost_per_ton(edge_attr, logistic_parameters: dict, time_resolutio
     # calculate cost per ton
     basic_costs = {i: edge_attr['km'] * basic_cost_random[edge_attr['type']]
                    for i, basic_cost_random in logistic_parameters['basic_cost_profiles'].items()}
-    transport_time = edge_attr['km'] / _get_speed(edge_attr, logistic_parameters['speeds'])
+    transport_time = edge_attr['km'] / speed
     loading_time, loading_fee = _get_dwell_time_and_fee(
         edge_attr, logistic_parameters['dwell_times'], logistic_parameters['loading_fees'])
     border_crossing_time, border_crossing_fee = _get_border_crossing_time_and_fee(

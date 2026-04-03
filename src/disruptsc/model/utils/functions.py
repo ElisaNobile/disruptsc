@@ -259,10 +259,27 @@ def find_min_in_nested_dict(d):
     for key, value in d.items():
         if isinstance(value, dict):  # If value is a nested dictionary, recurse
             min_value = min(min_value, find_min_in_nested_dict(value))
-        else:  # Leaf value (assumed to be float)
-            min_value = min(min_value, value)
+        else:  # Leaf value
+            if isinstance(value, float) or isinstance(value, int):
+                min_value = min(min_value, value)
 
     return min_value
+
+
+def load_usd_per_ton(filepath: str) -> dict:
+    usd_per_ton = pd.read_csv(filepath)
+    necessary_cols = ['region', 'sector', 'usd_per_ton']
+    for c in necessary_cols:
+        if c not in usd_per_ton.columns:
+            raise KeyError(f"Column {c} is missing from the sector table")
+    if usd_per_ton['region'].isnull().any():
+        raise ValueError(f"At least entry of the 'region' column is empty in {filepath}")
+    if usd_per_ton['sector'].isnull().any():
+        raise ValueError(f"At least entry of the 'sector' column is empty in {filepath}")
+    usd_per_ton = usd_per_ton[necessary_cols]
+    usd_per_ton = usd_per_ton.dropna()
+    usd_per_ton = usd_per_ton.set_index(['region', 'sector'])['usd_per_ton'].to_dict()
+    return usd_per_ton
 
 
 def load_sector_table(filepath: str) -> pd.DataFrame:
@@ -280,6 +297,10 @@ def load_sector_table(filepath: str) -> pd.DataFrame:
         Sector table with region_sector column guaranteed to exist
     """
     sector_table = pd.read_csv(filepath)
+    necessary_cols = ['region', 'sector', 'type']
+    for c in necessary_cols:
+        if c not in sector_table.columns:
+            raise KeyError(f"Column {c} is missing from the sector table")
     
     if "region_sector" not in sector_table.columns:
         sector_table['region_sector'] = sector_table['region'] + '_' + sector_table['sector']

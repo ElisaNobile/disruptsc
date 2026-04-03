@@ -26,6 +26,20 @@ def load_transport_data(filepaths, transport_mode, time_resolution):
         edges['id'] = edges.index
     edges['type'] = transport_mode
 
+    # Calculate km from geometry if missing
+    if "km" not in edges.columns or edges['km'].isnull().any():
+        logging.debug(f"Calculating 'km' from geometry for {transport_mode}")
+        # Project to Equal Earth projection (EPSG:8857) for accurate distance calculation
+        edges_projected = edges.to_crs("EPSG:8857")
+        # Calculate length in meters and convert to km
+        calculated_km = edges_projected.geometry.length / 1000.0
+
+        if "km" not in edges.columns:
+            edges['km'] = calculated_km
+        else:
+            # Fill only null values
+            edges.loc[edges['km'].isnull(), 'km'] = calculated_km[edges['km'].isnull()]
+
     # Compute how much it costs to transport one USD worth of good on each edge_attr
     # (Cost computation is handled in logistics configuration)
 
@@ -208,31 +222,43 @@ def create_transport_network(transport_modes: list, filepaths: dict, logistics_p
 
 
 def create_nodes_and_update_edges(edges: geopandas.GeoDataFrame):
+    COORDINATE_ROUNDING_PRECISION = 6
     # create nodes from endpoints
     endpoints = geopandas.GeoDataFrame({"end1": edges.geometry.apply(lambda line: Point(line.coords[0])),
                                         "type": edges['type'],
                                         "end2": edges.geometry.apply(lambda line: Point(line.coords[-1]))})
+    same_ends = endpoints['end1'] == endpoints['end2']
+    if same_ends.any():
+        raise ValueError("1. Some edges have same end points identified")
+
     all_endpoints = pd.concat([
         endpoints[['end1', 'type']].copy().rename(columns={'end1': 'geometry'}),
         endpoints[['end2', 'type']].copy().rename(columns={'end2': 'geometry'})
     ])
     all_endpoints = geopandas.GeoDataFrame(all_endpoints)
     all_endpoints = all_endpoints.set_geometry('geometry', crs=edges.crs)
-    all_endpoints['geometry_wkt'] = all_endpoints['geometry'].apply(lambda geom: wkt.dumps(geom, rounding_precision=5))
     all_endpoints.loc[all_endpoints['type'] == "multimodal", 'type'] = "ZZZmultimodal"  # put multimodal at the end
     all_endpoints = all_endpoints.sort_values("type", ascending=False)
+    all_endpoints['geometry_wkt'] = all_endpoints['geometry'].apply(
+        lambda geom: wkt.dumps(geom, rounding_precision=COORDINATE_ROUNDING_PRECISION))
     nodes = all_endpoints.drop_duplicates('geometry_wkt', keep="first").copy()  # so that multimodal nodes are removed
     assert 'ZZZmultimodal' not in nodes['type'].to_list()
+    # If that is not the case, that means that some multimodal nodes are not on top of other nodes
     nodes['id'] = range(nodes.shape[0])
     nodes.index = nodes['id']
     nodes['long'] = nodes['geometry'].x
     nodes['lat'] = nodes['geometry'].y
 
     # add nodes_id into end1 and end2 columns of edges
-    end1_wkt = endpoints['end1'].apply(lambda geom: wkt.dumps(geom, rounding_precision=5))
-    end2_wkt = endpoints['end2'].apply(lambda geom: wkt.dumps(geom, rounding_precision=5))
+    end1_wkt = endpoints['end1'].apply(lambda geom: wkt.dumps(geom, rounding_precision=COORDINATE_ROUNDING_PRECISION))
+    end2_wkt = endpoints['end2'].apply(lambda geom: wkt.dumps(geom, rounding_precision=COORDINATE_ROUNDING_PRECISION))
     edges['end1'] = end1_wkt.map(nodes.set_index('geometry_wkt')['id'])
     edges['end2'] = end2_wkt.map(nodes.set_index('geometry_wkt')['id'])
+
+    same_ends = edges['end1'] == edges['end2']
+    if same_ends.any():
+        # print(edges[same_ends])
+        raise ValueError("2. Some edges have same end points identified")
 
     return nodes, edges
 

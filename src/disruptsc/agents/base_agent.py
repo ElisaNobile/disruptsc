@@ -214,12 +214,28 @@ class BaseAgent:
         return selected_supplier_ids, selected_weights.tolist()
 
     @staticmethod
-    def transformUSD_to_tons(monetary_flow, monetary_unit, usd_per_ton):
+    def transformUSD_to_tons(monetary_flow, monetary_unit, usd_per_ton) -> float:
         """
         Convert monetary flow to tons using USD per ton conversion factor.
         """
+        import numpy as np
+
+        # Validate monetary_flow is a valid number
+        if not isinstance(monetary_flow, (int, float, np.number)):
+            raise TypeError(f"monetary_flow must be numeric, got {type(monetary_flow).__name__}: {monetary_flow}")
+
+        if isinstance(monetary_flow, (float, np.floating)) and np.isnan(monetary_flow):
+            raise ValueError(f"monetary_flow is nan. Cannot convert to tons.")
+
+        # Validate usd_per_ton
+        if not isinstance(usd_per_ton, (int, float, np.number)):
+            raise TypeError(f"usd_per_ton must be numeric, got {type(usd_per_ton).__name__}: {usd_per_ton}")
+
+        if isinstance(usd_per_ton, (float, np.floating)) and np.isnan(usd_per_ton):
+            raise ValueError(f"usd_per_ton is nan. Cannot convert to tons.")
+
         if usd_per_ton == 0:
-            return 0
+            return 0.0
         else:
             # Load monetary units
             monetary_unit_factor = {
@@ -228,7 +244,7 @@ class BaseAgent:
                 "USD": 1
             }
             factor = monetary_unit_factor[monetary_unit]
-            return monetary_flow / (usd_per_ton / factor)
+            return float(monetary_flow / (usd_per_ton / factor))
 
 
 class BaseAgents(dict):
@@ -296,23 +312,62 @@ class BaseAgents(dict):
         else:
             raise ValueError(f"Output type '{output_type}' not recognized.")
 
+    def get_subregions(self, subregion_level: str, output_type='dict'):
+        subregion_dict = self.get_properties("subregions", "dict")
+        subregion_dict = {agent_id: subregions[subregion_level] for agent_id, subregions in subregion_dict.items()}
+        if output_type == 'dict':
+            return subregion_dict
+        elif output_type == 'list':
+            return list(subregion_dict.values())
+        elif output_type == 'set':
+            return set(subregion_dict.values())
+        else:
+            raise ValueError(f"Output type '{output_type}' not recognized.")
+
+    def select_by_subregions(self, subregion_level: str, selected_subregions: list[str]):
+        subregions_dict = self.get_subregions(subregion_level, output_type='dict')
+        selected_ids = [agent_id for agent_id, subregion in subregions_dict.items()
+                        if subregion in selected_subregions]
+        return self.__class__([self[agent_id] for agent_id in selected_ids])
+
+    def get_subregion_sectors(self, subregion_level: str, output_type='dict'):
+        subregion_dict = self.get_subregions(subregion_level, "dict")
+        sector_dict = self.get_properties("sector", "dict")
+        subregion_sectors = {agent_id: (subregion_dict[agent_id], sector_dict[agent_id])
+                             for agent_id in self.keys()}
+        if output_type == 'dict':
+            return subregion_sectors
+        elif output_type == 'list':
+            return list(subregion_sectors.values())
+        elif output_type == 'set':
+            return set(subregion_sectors.values())
+        else:
+            raise ValueError(f"Output type '{output_type}' not recognized.")
+
+    def select_by_subregion_sectors(self, subregion_level: str, subregion_sectors: list[tuple]):
+        subregion_sector_dict = self.get_subregion_sectors(subregion_level, output_type='dict')
+        selected_ids = [agent_id for agent_id, (subregion, sector) in subregion_sector_dict.items()
+                        if (subregion, sector) in subregion_sectors]
+        return self.__class__([self[agent_id] for agent_id in selected_ids])
+
     def select_by_properties(self, filters: dict):
         """
         Select agents where the property values match any of the given values in each filter.
         Example: filters = {'region_sector': [...], 'province': [...]}
         Supports nested subregion properties: filters = {'subregion_province': [...]}
         """
-        selected = self.values()
-        for prop, values in filters.items():
-            if prop.startswith('subregion_') and len(prop) > 10:  # subregion_* properties
-                subregion_level = prop[10:]  # Remove 'subregion_' prefix
-                selected = [agent for agent in selected 
-                           if hasattr(agent, 'subregions') and 
-                           isinstance(agent.subregions, dict) and
-                           agent.subregions.get(subregion_level) in values]
+        selected_pids = set(self.keys())
+        for attribute, target_values in filters.items():
+            if attribute in ['province', 'canton']:
+                selected_pids = selected_pids & set(self.select_by_subregions(attribute, target_values).keys())
+            elif attribute in ["province_sector", "canton_sector"]:
+                subregion_level = attribute[:-len('_sector')]
+                selected_pids = selected_pids & set(self.select_by_subregion_sectors(subregion_level, target_values).keys())
             else:
-                selected = [agent for agent in selected if getattr(agent, prop, None) in values]
-        return self.__class__(selected)
+                selected_pids = selected_pids & set([pid for pid, agent in self.items()
+                                           if getattr(agent, attribute, None) in target_values])
+        selected_agents = [self[pid] for pid in selected_pids]
+        return self.__class__(selected_agents)
 
     def group_agent_ids_by_property(self, property_name: str):
         """Group agent IDs by a property value."""
@@ -362,7 +417,7 @@ class BaseAgents(dict):
             agent.assign_cost_profile(nb_cost_profiles)
 
     def choose_initial_routes(self, sc_network: "ScNetwork", transport_network: "TransportNetwork",
-                              capacity_constraint: bool,
+                              capacity_constraint: bool, capacity_constraint_mode: str,
                               explicit_service_firm: bool, transport_to_households: bool,
                               sectors_no_transport_network: list,
                               monetary_units_in_model: str,
@@ -370,7 +425,7 @@ class BaseAgents(dict):
                               use_route_cache: bool):
         """
         Choose initial routes for all agents that have transport capabilities.
-        
+
         This method delegates to each agent's choose_initial_routes method if it exists.
         """
         if parallelized and (not capacity_constraint):
@@ -380,8 +435,8 @@ class BaseAgents(dict):
                 futures = [
                     executor.submit(
                         agent.choose_initial_routes, sc_network, transport_network, capacity_constraint,
-                        explicit_service_firm, transport_to_households, sectors_no_transport_network,
-                        monetary_units_in_model, use_route_cache
+                        capacity_constraint_mode, explicit_service_firm, transport_to_households,
+                        sectors_no_transport_network, monetary_units_in_model, use_route_cache
                     )
                     for agent in self.values()
                     if hasattr(agent, 'choose_initial_routes')
@@ -393,8 +448,8 @@ class BaseAgents(dict):
             for agent in tqdm(self.values(), total=len(self)):
                 if hasattr(agent, 'choose_initial_routes'):
                     agent.choose_initial_routes(
-                        sc_network, transport_network, capacity_constraint, explicit_service_firm,
-                        transport_to_households, sectors_no_transport_network,
+                        sc_network, transport_network, capacity_constraint, capacity_constraint_mode,
+                        explicit_service_firm, transport_to_households, sectors_no_transport_network,
                         monetary_units_in_model, use_route_cache
                     )
 

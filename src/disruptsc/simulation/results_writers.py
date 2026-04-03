@@ -27,13 +27,13 @@ class CSVResultsWriter:
 
     def _write_headers(self):
         """Write CSV headers."""
-        with open(self.output_file, mode="w", newline="") as file:
+        with open(self.output_file, mode="w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow(self.headers)
 
     def write_row(self, data: list):
         """Write a single row of data."""
-        with open(self.output_file, mode="a", newline="") as file:
+        with open(self.output_file, mode="a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow(data)
 
@@ -53,11 +53,11 @@ class CSVResultsWriter:
         return CriticalityWriter(output_file, parameters)
 
     @classmethod
-    def create_ad_hoc_writer(cls, parameters: "Parameters") -> "AdHocWriter":
+    def create_destruction_writer(cls, parameters: "Parameters") -> "DestructionWriter":
         """Create writer for ad-hoc analysis results."""
         suffix = get_simplified_timestamp()
-        output_file = paths.OUTPUT_FOLDER / parameters.scope / f"disruption_{suffix}.csv"
-        return AdHocWriter(output_file, parameters)
+        output_file = paths.OUTPUT_FOLDER / parameters.scope / f"destruction_{suffix}.csv"
+        return DestructionWriter(output_file, parameters)
 
     @classmethod
     def create_sensitivity_writer(cls, parameters: "Parameters") -> "SensitivityWriter":
@@ -88,6 +88,7 @@ class DisruptionMCWriter(CSVResultsWriter):
 
         super().__init__(output_file, headers)
         self.parameters = parameters
+
 
     def write_iteration_results(self, iteration: int, simulation: "Simulation", model: "Model"):
         """Write results for a single Monte Carlo iteration."""
@@ -167,7 +168,7 @@ class CriticalityWriter(CSVResultsWriter):
                        household_loss_per_region_values + country_loss_per_region_values + [geometry])
 
 
-class AdHocWriter(CSVResultsWriter):
+class DestructionWriter(CSVResultsWriter):
     """Writer for ad-hoc analysis results."""
 
     def __init__(self, output_file: Path, parameters: "Parameters"):
@@ -178,10 +179,12 @@ class AdHocWriter(CSVResultsWriter):
         super().__init__(output_file, headers)
         self.parameters = parameters
 
-    def write_ad_hoc_results(self, disruption: list, household_loss: float, country_loss: float,
-                             household_loss_per_periods: dict):
+    def write_destruction_results(self, disruption_identifier: list | str, household_loss: float, country_loss: float,
+                                  household_loss_per_periods: dict):
         """Write results for a single sector combination analysis."""
-        self.write_row(["_".join(disruption), household_loss, country_loss] +
+        if isinstance(disruption_identifier, list):
+            disruption_identifier = "_".join(disruption_identifier)
+        self.write_row([disruption_identifier, household_loss, country_loss] +
                        list(household_loss_per_periods.values()))
 
 
@@ -192,15 +195,23 @@ class SensitivityWriter(CSVResultsWriter):
         # Build headers dynamically based on sensitivity parameters
         if not parameters.sensitivity:
             raise ValueError("No sensitivity parameters defined")
-        
+
+        # Need to create a dummy model to get region info
+        from disruptsc.model.model import Model
+        temp_model = Model(parameters)
+        temp_model._prepare_mrio_and_sectors()
+
         param_headers = list(parameters.sensitivity.keys())
-        headers = ["combination_id"] + param_headers + ["household_loss", "country_loss"]
+        region_household_loss_labels = ['household_loss_' + region for region in temp_model.mrio.regions]
+        headers = ["combination_id"] + param_headers + ["household_loss", "country_loss"] + region_household_loss_labels
 
         super().__init__(output_file, headers)
         self.parameters = parameters
+        self.regions = temp_model.mrio.regions
 
-    def write_sensitivity_results(self, combination_id: int, combination: dict, 
-                                  household_loss: float, country_loss: float):
+    def write_sensitivity_results(self, combination_id: int, combination: dict,
+                                  household_loss: float, country_loss: float, household_loss_per_region: dict):
         """Write results for a single parameter combination."""
         param_values = [combination[param] for param in combination.keys()]
-        self.write_row([combination_id] + param_values + [household_loss, country_loss])
+        regional_values = [household_loss_per_region.get(region, 0.0) for region in self.regions]
+        self.write_row([combination_id] + param_values + [household_loss, country_loss] + regional_values)

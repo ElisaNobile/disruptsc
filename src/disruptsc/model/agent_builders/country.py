@@ -64,7 +64,7 @@ def _extract_trade_matrices(mrio: Mrio, time_resolution: str, target_units: str,
     return import_table, export_table, transit_matrix
 
 
-def _prepare_country_spatial_data(filepath_countries_spatial: Path, filepath_sectors: Path,
+def _prepare_country_spatial_data(filepath_countries_spatial: Path, usd_per_ton: dict,
                                   country_list: List[str], transport_nodes: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Load and prepare country spatial data."""
     # Load spatial data
@@ -84,14 +84,21 @@ def _prepare_country_spatial_data(filepath_countries_spatial: Path, filepath_sec
     country_table['lat'] = country_table["geometry"].y
     
     # Add USD per ton data
-    sector_data = pd.read_csv(filepath_sectors).set_index("sector")
-    import_index = sector_data.index[sector_data.index.str.contains('imp', case=False)]
-    if len(import_index) == 0:
-        raise ValueError("Imports not found in sector table")
-    elif len(import_index) > 1:
-        raise ValueError(f"Multiple imports row found in sector table: {import_index}")
-    import_index = import_index[0]
-    country_table['country_usd_per_ton'] = sector_data.loc[import_index, 'usd_per_ton']
+    # sector_data = pd.read_csv(filepath_sectors).set_index("sector")
+    # import_index = sector_data.index[sector_data.index.str.contains('imp', case=False)]
+    # if len(import_index) == 0:
+    #     raise ValueError("Imports not found in sector table")
+    # elif len(import_index) > 1:
+    #     raise ValueError(f"Multiple imports row found in sector table: {import_index}")
+    # import_index = import_index[0]
+    import_keywords = ("imp", "row")
+    print(usd_per_ton.keys())
+    import_keys = [key for key in usd_per_ton.keys()
+                   if any(keyword in s.lower() for s in key for keyword in import_keywords)]
+    if len(import_keys) > 0:
+        country_table['country_usd_per_ton'] = sum([usd_per_ton[key] for key in import_keys]) / len(import_keys)
+    else:
+        raise KeyError("No entry found for imports in usd_per_ton")
     return country_table
 
 
@@ -140,7 +147,7 @@ def _create_country_trade_data(country: str, import_table: pd.DataFrame, export_
 
 def create_countries_from_mrio(mrio: Mrio,
                                transport_nodes: gpd.GeoDataFrame,
-                               filepath_countries_spatial: Path, filepath_sectors: Path,
+                               filepath_countries_spatial: Path, usd_per_ton: dict,
                                time_resolution: str,
                                target_units: str, input_units: str) -> Tuple[Countries, gpd.GeoDataFrame]:
     """Create countries from MRIO data with trade flows and spatial information.
@@ -156,6 +163,10 @@ def create_countries_from_mrio(mrio: Mrio,
         
     Returns:
         Tuple of (Countries collection, country spatial table)
+
+    Parameters
+    ----------
+    usd_per_ton
     """
     logging.info('Creating countries from MRIO data')
     
@@ -181,7 +192,7 @@ def create_countries_from_mrio(mrio: Mrio,
     
     # Prepare spatial data
     country_table = _prepare_country_spatial_data(
-        filepath_countries_spatial, filepath_sectors, country_list, transport_nodes
+        filepath_countries_spatial, usd_per_ton, country_list, transport_nodes
     )
     
     # Create countries

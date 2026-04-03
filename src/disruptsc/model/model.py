@@ -8,7 +8,7 @@ import logging
 import pandas as pd
 from tqdm import tqdm
 
-from .utils.functions import load_sector_table, filter_sector
+from .utils.functions import load_sector_table, filter_sector, load_usd_per_ton
 from .utils.profiling import profile_method
 from .utils.caching import \
     load_cached_transport_network, \
@@ -141,6 +141,7 @@ class Model(object):
                 sector_table=self.sector_table,
                 households_spatial=self.parameters.filepaths['households_spatial'],
                 firms_spatial=self.parameters.filepaths['firms_spatial'],
+                usd_per_ton=self.usd_per_ton,
                 transport_nodes=self.transport_nodes,
                 io_cutoff=self.parameters.io_cutoff,
                 cutoff_firm_output=self.parameters.cutoff_firm_output,
@@ -229,7 +230,7 @@ class Model(object):
             mrio=self.mrio,
             transport_nodes=self.transport_nodes,
             filepath_countries_spatial=self.parameters.filepaths['countries_spatial'],
-            filepath_sectors=self.parameters.filepaths['sector_table'],
+            usd_per_ton=self.usd_per_ton,
             time_resolution=self.parameters.time_resolution,
             target_units=self.parameters.monetary_units_in_model,
             input_units=self.parameters.monetary_units_in_data
@@ -288,6 +289,7 @@ class Model(object):
             self.parameters.monetary_units_in_data
         )
         self.sector_table = load_sector_table(self.parameters.filepaths['sector_table'])
+        self.usd_per_ton = load_usd_per_ton(self.parameters.filepaths['usd_per_ton'])
 
     def _filter_sectors(self) -> list:
         """Filter sectors based on output and demand criteria."""
@@ -488,26 +490,34 @@ class Model(object):
             self.countries.assign_cost_profile(self.parameters.logistics['nb_cost_profiles'])
             self.firms.assign_cost_profile(self.parameters.logistics['nb_cost_profiles'])
 
+            # Disable route caching if capacity constraints are enabled
+            # because cached routes become invalid as edges fill up
+            use_cache_for_initial_routes = self.parameters.use_route_cache and not self.parameters.get_capacity_constraint_enabled()
+            if self.parameters.get_capacity_constraint_enabled() and self.parameters.use_route_cache:
+                logging.info('Route caching disabled throughout simulation due to capacity constraints')
+
             logging.info('The supplier--buyer graph is being connected to the transport network')
             logging.info('Each B2B and transit edge_attr is being linked to a route of the transport network')
             logging.info('Routes for transit and import flows are being selected by trading countries')
             self.countries.choose_initial_routes(self.sc_network, self.transport_network,
                                                  self.parameters.get_capacity_constraint_enabled(),
+                                                 self.parameters.get_capacity_constraint_mode(),
                                                  self.parameters.explicit_service_firm,
                                                  self.parameters.transport_to_households,
                                                  self.parameters.sectors_no_transport_network,
                                                  self.parameters.monetary_units_in_model,
                                                  parallelized=False,
-                                                 use_route_cache=self.parameters.use_route_cache)
+                                                 use_route_cache=use_cache_for_initial_routes)
             logging.info('Routes for exports and B2B domestic flows are being selected by domestic firms')
             self.firms.choose_initial_routes(self.sc_network, self.transport_network,
                                              self.parameters.get_capacity_constraint_enabled(),
+                                             self.parameters.get_capacity_constraint_mode(),
                                              self.parameters.explicit_service_firm,
                                              self.parameters.transport_to_households,
                                              self.parameters.sectors_no_transport_network,
                                              self.parameters.monetary_units_in_model,
                                              parallelized=False,
-                                             use_route_cache=self.parameters.use_route_cache)
+                                             use_route_cache=use_cache_for_initial_routes)
             self.create_commercial_link_table()
             # Save to tmp folder
             data_to_cache = {
@@ -520,7 +530,13 @@ class Model(object):
             }
             cache_logistic_routes(data_to_cache)
 
-            self.logistic_routes_initialized = True
+        # Reset loads and capacity flags after route setup
+        # Routes are selected and cached, but we want a clean slate for the simulation
+        if self.parameters.get_capacity_constraint_enabled():
+            logging.info('Resetting transport network loads after initial route setup')
+            self.transport_network.reset_loads()
+
+        self.logistic_routes_initialized = True
 
     def reset_variables(self):
         logging.info("Resetting variables on transport network")
@@ -825,7 +841,6 @@ class Model(object):
             return simulation
         logging.info(f"{len(self.disruption_list)} disruption(s) will occur")
         self.disruption_list.log_info()
-
         logging.info("Starting time loop")
         for t in range(1, t_final + 1):
             self.run_one_time_step(time_step=t, current_simulation=simulation)

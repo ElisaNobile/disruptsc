@@ -6,6 +6,7 @@ monetary_units_in_model: mUSD
 monetary_units_inputed: USD
 time_resolution: day
 io_cutoff: 0.02 #0.02
+io_cutoff: 0.02 #0.02
 inventory_duration_targets:
   definition: per_input_type
   values:
@@ -25,6 +26,7 @@ logistics:
     roads: 0.073
     railways: 0.025
     waterways: 0.01
+  speeds:
   speeds:
     roads: 50
     railways: 20
@@ -79,10 +81,12 @@ t_final: 30
 cutoff_firm_output:
   'type': 'absolute'
   'value': 100
+  'value': 100
   "unit": "kUSD"
 # Filter out region_sector to households links if purchase is below that cutoff value
 cutoff_household_demand:
   'type': 'absolute'  # only absolute works
+  'value': 100
   'value': 100
   "unit": "kUSD"
 
